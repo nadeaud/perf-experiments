@@ -13,6 +13,7 @@ CONFIG   += console
 CONFIG   -= app_bundle
 
 TEMPLATE = app
-
+QMAKE_CXX += -fopenmp
+QMAKE_LIBS += -fopenmp
 
 SOURCES += main.cpp
