@@ -35,7 +35,7 @@ void write_linear(int * array, int size) {
             array[i] = i*2;
             sum = array[i];
         }
-        printf("Thread %d, sum = %d.\n", omp_get_thread_num(), sum);
+        //printf("Thread %d, sum = %d.\n", omp_get_thread_num(), sum);
     }
 }
 
@@ -64,7 +64,7 @@ void make_experiment(int inherit=0) {
     read(fd, &v1, sizeof(v1));
     write_linear(array, ARRAY_SIZE);
     read(fd, &v2, sizeof(v2));
-    printf("Number of total instruction : %ld.\n", v2-v1);
+    printf("Number of total instruction for %d threads : %ld.\n", omp_get_num_threads(), v2-v1);
 
     omp_set_num_threads(2);
     write_linear(array, ARRAY_SIZE);
@@ -83,5 +83,6 @@ int main(int argc, char** argv)
 
     make_experiment(1);
 
+    make_experiment(0);
     return 0;
 }
