@@ -5,6 +5,9 @@
  *
 */
 
+#include <QDebug>
+#include <QVector>
+#include <qalgorithms.h>
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -16,6 +19,11 @@
 #include <sys/syscall.h>
 
 #define ARRAY_SIZE 100000
+
+typedef enum {
+    INST,
+    HW_CYCLES
+} counter_type;
 
 /* perf_event_open syscall wrapper */
 static long
@@ -35,54 +43,111 @@ void write_linear(int * array, int size) {
             array[i] = i*2;
             sum = array[i];
         }
-        //printf("Thread %d, sum = %d.\n", omp_get_thread_num(), sum);
+        printf("Thread %d, sum = %d.\n", omp_get_thread_num(), sum);
     }
 }
 
-void make_experiment(int inherit=0) {
-
-    printf("Inherit is set to %d.\n", inherit);
-    int array[ARRAY_SIZE];
-
+/* Open an hardware counter for the current thread */
+int perf_open(int inherit, counter_type config)
+{
     perf_event_attr attr;
     memset(&attr,0,sizeof(attr));
     attr.size = sizeof(attr);
     attr.exclude_kernel = 1;
     attr.type = PERF_TYPE_HARDWARE;
-    attr.config = PERF_COUNT_HW_INSTRUCTIONS;
+
+    switch(config){
+        case INST :
+            attr.config = PERF_COUNT_HW_INSTRUCTIONS;
+            break;
+        case HW_CYCLES :
+            attr.config = PERF_COUNT_HW_CPU_CYCLES;
+            break;
+        default :
+            fprintf(stderr, "Invalid counter configuration.\n");
+            exit(EXIT_FAILURE);
+            break;
+    }
+
     attr.inherit = inherit;
     attr.disabled = 0;
+    return sys_perf_event_open(&attr, 0, -1, -1, 0);
+}
 
-    pid_t pid = getpid();
-    int fd = sys_perf_event_open(&attr, pid, -1, -1, 0);
+u_int64_t read_counter(QVector<int> fds)
+{
+    u_int64_t sum = 0;
+    u_int64_t val;
+    for(int i = 0; i < fds.size(); i++)
+    {
+        read(fds[i], &val, sizeof(u_int64_t));
+        sum += val;
+    }
+    return sum;
+}
 
-    long v1,v2;
+void close_counter(QVector<int> fds)
+{
+    foreach (int fd, fds)
+    {
+       close(fd);
+    }
+}
+
+void make_experiment(int inherit, int nbTh)
+{
+
+    printf("Inherit is set to %d.\n", inherit);
+    int array[ARRAY_SIZE];
 
     omp_set_dynamic(0);
     omp_set_num_threads(1);
-    write_linear(array, ARRAY_SIZE);
-    read(fd, &v1, sizeof(v1));
-    write_linear(array, ARRAY_SIZE);
-    read(fd, &v2, sizeof(v2));
-    printf("Number of total instruction for %d threads : %ld.\n", omp_get_num_threads(), v2-v1);
 
-    omp_set_num_threads(2);
-    write_linear(array, ARRAY_SIZE);
-    read(fd, &v1, sizeof(v1));
-    write_linear(array, ARRAY_SIZE);
-    read(fd, &v2, sizeof(v2));
-    // It should be twice as big as there are two threads
-    printf("Number of total instruction : %ld.\n", v2-v1);
+    u_int64_t inst[2];
+    u_int64_t cycles[2];
 
-    close(fd);
+    QVector<int> fds_inst;
+    QVector<int> fds_cycles;
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            fds_inst.resize(omp_get_num_threads());
+            fds_cycles.resize(omp_get_num_threads());
+        }
+        fds_inst[omp_get_thread_num()] = perf_open(1,counter_type(INST));
+        fds_cycles[omp_get_thread_num()] = perf_open(1,counter_type(HW_CYCLES));
+    }
+
+    for(int i = 0; i<fds_cycles.size(); i++){
+        inst[0] = read_counter(fds_inst);
+        cycles[0] = read_counter(fds_cycles);
+    }
+
+    write_linear(array, ARRAY_SIZE);
+
+    for(int i = 0; i<fds_cycles.size(); i++){
+        inst[1] = read_counter(fds_inst);
+        cycles[1] = read_counter(fds_cycles);
+    }
+
+    printf("Number of total instruction for %d threads : %ld.\n", omp_get_num_threads(), inst[1]-inst[0]);
+    printf("Number of total cycles for %d threads : %ld.\n", omp_get_num_threads(), cycles[1]-cycles[0]);
+
+    double ipc = ((double)(inst[1] - inst[0])) / ((double)(cycles[1] - cycles[0]));
+
+    printf("IPC calculated : %f.\n", ipc);
+
+    close_counter(fds_inst);
+    close_counter(fds_cycles);
 }
+
 
 int main(int argc, char** argv)
 {
     (void) argc; (void) argv;
 
-    make_experiment(1);
+    make_experiment(1,2);
 
-    make_experiment(0);
     return 0;
 }

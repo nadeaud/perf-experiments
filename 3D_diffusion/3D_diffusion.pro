@@ -17,4 +17,8 @@ TEMPLATE = app
 QMAKE_CXX += -fopenmp
 QMAKE_LIBS += -fopenmp
 
-SOURCES += main.cpp
+SOURCES += main.cpp \
+    perf_functions.cpp
+
+HEADERS += \
+    perf_functions.h

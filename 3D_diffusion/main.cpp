@@ -42,10 +42,12 @@ Minor edits made to this program by Jim Dempsey of QuickThread Programming, LLC
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <inttypes.h>
+#include <QVector>
+#include "perf_functions.h"
 
 #define REAL float
 #if !defined(NX)
-#define NX 192
+#define NX 128
 #endif
 #define NXP nx
 
@@ -144,6 +146,7 @@ void dump_result(REAL *f, int nx, int ny, int nz, char *out_path) {
 
 int main(int argc, char *argv[]) 
 {
+    (void) argc; (void) argv;
 
     double time_begin, time_end;
 
@@ -167,7 +170,7 @@ int main(int argc, char *argv[])
     REAL ce, cw, cn, cs, ct, cb, cc;
 
     omp_set_dynamic(0);
-    omp_set_num_threads(1);
+    omp_set_num_threads(4);
     int    nthreads;
 #pragma omp parallel
 #pragma omp master
@@ -203,30 +206,31 @@ int main(int argc, char *argv[])
     printf("Running diffusion kernel %d times with %d threads\n", count, nthreads); fflush(stdout);
     time_begin = cur_second();
 
+    QVector<int> fds_inst;
+    QVector<int> fds_cycles;
+
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            fds_inst.resize(omp_get_num_threads());
+            fds_cycles.resize(omp_get_num_threads());
+        }
+        fds_inst[omp_get_thread_num()] = perf_open(1, counter_config(INST));
+        fds_cycles[omp_get_thread_num()] = perf_open(1, counter_config(HW_CYCLES));
+
+
+    }
+
     u_int64_t v_inst[2],v_cycle[2];
 
-    perf_event_attr attr[2];
-    memset(attr,0,2*sizeof(perf_event_attr));
-    for(int i =0; i<2; i++) {
-        attr[i].size = sizeof(attr);
-        attr[i].type = PERF_TYPE_HARDWARE;
-        attr[i].inherit = 1;
-        attr[i].disabled = 0;
-    }
-    attr[0].config = PERF_COUNT_HW_CPU_CYCLES;
-    attr[1].config = PERF_COUNT_HW_INSTRUCTIONS;
-    int fd[2];
-    pid_t pid = getpid();
-    fd[0] = sys_perf_event_open(attr, pid, -1, -1, 0);
-    fd[1] = sys_perf_event_open(&attr[1], pid, -1, -1, 0);
-
-    read(fd[0], v_inst, sizeof(v_inst[0]));
-    read(fd[1], v_cycle, sizeof(v_cycle[0]));
+    v_inst[0] = read_counter(fds_inst);
+    v_cycle[0] = read_counter(fds_cycles);
 
     diffusion_openmp(f1, f2, nx, ny, nz, ce, cw, cn, cs, ct, cb, cc, dt, count);
 
-    read(fd[0], &v_inst[1], sizeof(v_inst[1]));
-    read(fd[1], &v_cycle[1], sizeof(v_cycle[1]));
+    v_inst[1] = read_counter(fds_inst);
+    v_cycle[1] = read_counter(fds_cycles);
 
     time_end = cur_second();
     time = count * dt;
@@ -234,9 +238,12 @@ int main(int argc, char *argv[])
     printf("Nombre d'instructions : %" PRIu64 ".\n", v_inst[1]-v_inst[0]);
     printf("Nombre de cycles : %" PRIu64 ".\n", v_cycle[1]-v_cycle[0]);
 
-    double cpi =  ((double)(v_cycle[1] - v_cycle[0]))/((double)(v_inst[1] - v_inst[0]));
+    close_counter(fds_inst);
+    close_counter(fds_cycles);
 
-    printf("CPI : %f.\n", cpi);
+    double ipc = ((double)(v_inst[1] - v_inst[0])) / ((double)(v_cycle[1] - v_cycle[0]));
+
+    printf("IPC : %f.\n", ipc);
 
     dump_result(f_final, nx, ny, nz, "diffusion_result.dat");
 
